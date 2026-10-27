@@ -12,7 +12,7 @@
 # - 拉取失败 / 内容为空 / 格式全不合法时保持现状（不会把自己锁在门外）
 # - 沙盒重建后：只需把新公钥提交到 KEYS_URL 对应的文件，5 分钟内三台节点自动生效
 #
-# 卸载：sudo rm -f /etc/cron.d/birun-key-sync /usr/local/sbin/birun-key-sync
+# 卸载：sudo systemctl disable --now birun-key-sync.timer 2>/dev/null; sudo rm -f /etc/systemd/system/birun-key-sync.* /etc/cron.d/birun-key-sync /usr/local/sbin/birun-key-sync
 #       （托管区块里的公钥会保留，需要的话手动删除两行标记之间的内容）
 set -euo pipefail
 
@@ -74,12 +74,40 @@ chmod 755 /usr/local/sbin/birun-key-sync
 # 1) 立即写入种子公钥  2) 立即同步一次  3) 每 5 分钟同步
 /usr/local/sbin/birun-key-sync --seed "$SEED_KEYS"
 /usr/local/sbin/birun-key-sync || true
-cat > /etc/cron.d/birun-key-sync <<CRON
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+  cat > /etc/systemd/system/birun-key-sync.service <<'UNIT'
+[Unit]
+Description=BiRun deploy key sync
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/birun-key-sync
+UNIT
+  cat > /etc/systemd/system/birun-key-sync.timer <<'UNIT'
+[Unit]
+Description=BiRun deploy key sync every 5 minutes
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now birun-key-sync.timer >/dev/null
+  echo "定时方式：systemd timer（systemctl status birun-key-sync.timer 查看）"
+else
+  mkdir -p /etc/cron.d
+  cat > /etc/cron.d/birun-key-sync <<CRON
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */5 * * * * root /usr/local/sbin/birun-key-sync >/dev/null 2>&1
 CRON
-chmod 644 /etc/cron.d/birun-key-sync
+  chmod 644 /etc/cron.d/birun-key-sync
+  command -v cron >/dev/null || echo "警告：未检测到 cron，请 apt install -y cron" >&2
+  echo "定时方式：cron（/etc/cron.d/birun-key-sync）"
+fi
 
 echo "OK：已安装部署公钥自动同步（每 5 分钟，来源 $KEYS_URL）"
 echo "当前托管公钥："
